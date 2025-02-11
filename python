@@ -1,0 +1,121 @@
+import json
+import uuid
+import boto3
+from decimal import Decimal
+
+# Initialize DynamoDB client
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('MortgageApplications')  # Replace with your DynamoDB table name
+
+def lambda_handler(event, context):
+    try:
+        print("Event received:", event)  # Log the event (request data)
+
+        # Handle OPTIONS request (CORS preflight request)
+        if event.get('httpMethod') == 'OPTIONS':
+            print("OPTIONS request received.")  # Log OPTIONS request
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",  # Allow POST and OPTIONS
+                    "Access-Control-Allow-Headers": "Content-Type"  # Allow Content-Type header
+                },
+                "body": json.dumps({})
+            }
+
+        # Parse input data (from API Gateway request)
+        data = json.loads(event['body'])
+        print("Parsed Data:", data)  # Log parsed data
+
+        # Extract values from the request
+        income = Decimal(str(data.get('income', 0)))  # Ensure income is Decimal
+        credit_score = int(data.get('credit_score', 0))
+        dti = Decimal(str(data.get('dti', 0)))  # Ensure DTI is Decimal
+        loan_amount = Decimal(str(data.get('loan_amount', 0)))  # Ensure loan_amount is Decimal
+        property_value = Decimal(str(data.get('property_value', 0)))  # Ensure property_value is Decimal
+
+        # Validate input
+        if not (income and credit_score and dti and loan_amount and property_value):
+            print("Missing input fields.")  # Log missing fields
+            return {
+                "statusCode": 400,
+                "headers": {
+                    "Content-Type": "application/json",
+                },
+                "body": json.dumps({"error": "Please fill in all fields."})
+            }
+
+        # Mortgage eligibility checks
+        result_text = []
+        eligibility = True
+
+        # Convert 4.5 to Decimal for compatibility
+        max_loan_amount = income * Decimal('4.5')  # Use Decimal for consistent arithmetic
+        if loan_amount > max_loan_amount:
+            result_text.append(f"❌ Loan exceeds 4.5x income (£{max_loan_amount:.2f}).")
+            eligibility = False
+        else:
+            result_text.append("✅ Loan is within the limit.")
+
+        if credit_score < 650:
+            result_text.append(f"❌ Credit score too low ({credit_score}).")
+            eligibility = False
+        else:
+            result_text.append("✅ Credit score acceptable.")
+
+        if dti > 50:
+            result_text.append(f"❌ DTI too high ({dti}%).")
+            eligibility = False
+        else:
+            result_text.append("✅ DTI acceptable.")
+
+        ltv = (loan_amount / property_value) * Decimal('100')  # Use Decimal for LTV calculation
+        if ltv > Decimal('95'):
+            result_text.append(f"❌ LTV too high ({ltv:.2f}%).")
+            eligibility = False
+        else:
+            result_text.append("✅ LTV acceptable.")
+
+        # Store in DynamoDB
+        application_id = str(uuid.uuid4())
+        print("Storing data in DynamoDB...")  # Log before DynamoDB insertion
+        table.put_item(Item={
+            "application_id": application_id,
+            "income": income,
+            "credit_score": credit_score,
+            "dti": dti,
+            "loan_amount": loan_amount,
+            "property_value": property_value,
+            "eligible": eligibility
+        })
+
+        # Final Response
+        response = {
+            "eligible": eligibility,
+            "message": "✅ Approved" if eligibility else "❌ Not Approved",
+            "details": result_text
+        }
+
+        print("Returning response:", response)  # Log the response
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Methods": "OPTIONS, POST",
+                "Access-Control-Allow-Headers": "Content-Type"
+            },
+            "body": json.dumps(response)
+        }
+
+    except Exception as e:
+        print(f"Error: {e}")  # Log the error
+        return {
+            "statusCode": 500,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Methods": "OPTIONS, POST",
+                "Access-Control-Allow-Headers": "Content-Type"
+            },
+            "body": json.dumps({"error": str(e)})
+        }
